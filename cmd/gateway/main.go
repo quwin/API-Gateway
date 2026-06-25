@@ -54,10 +54,10 @@ func getRateLimiter() limiter.RateLimiter {
 		)
 	case "token-bucket-memory":
 		return limiter.NewTokenBucketMemoryLimiter(
-			getenvInt64("TOKEN_BUCKET_CAPACITY", 10),
-			getenvFloat64("TOKEN_BUCKET_REFILL_RATE", 2),
+			getenvInt64("BUCKET_CAPACITY", 5),
+			getenvFloat64("RATE_LIMIT", 5)/60.0,
 		)
-	case "sliding-window-log-memory":
+	case "sliding-window-memory":
 		return limiter.NewSlidingWindowLogLimiter(
 			getenvInt64("RATE_LIMIT", 5),
 			getenvDuration("RATE_LIMIT_WINDOW", time.Minute),
@@ -71,8 +71,8 @@ func getRateLimiter() limiter.RateLimiter {
 	case "token-bucket-redis":
 		return limiter.NewTokenBucketRedisLimiter(
 			newRedisClient(),
-			getenvInt64("TOKEN_BUCKET_CAPACITY", 10),
-			getenvFloat64("TOKEN_BUCKET_REFILL_RATE", 2),
+			getenvInt64("BUCKET_CAPACITY", 5),
+			getenvFloat64("RATE_LIMIT", 5)/60.0,
 		)
 	case "sliding-window-redis":
 		return limiter.NewSlidingWindowRedisLimiter(
