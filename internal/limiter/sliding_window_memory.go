@@ -8,36 +8,24 @@ import (
 
 type SlidingWindowLogLimiter struct {
 	mu       sync.Mutex
-	limit    int64
-	window   time.Duration
 	Requests map[string][]time.Time
 	Now      func() time.Time
 }
 
-func NewSlidingWindowLogLimiter(limit int64, window time.Duration) *SlidingWindowLogLimiter {
-	if limit <= 0 {
-		panic("limit must be greater than 0")
-	}
-
-	if window <= 0 {
-		panic("window must be greater than 0")
-	}
-
+func NewSlidingWindowLogLimiter() *SlidingWindowLogLimiter {
 	return &SlidingWindowLogLimiter{
-		limit:    limit,
-		window:   window,
 		Requests: make(map[string][]time.Time),
 		Now:      time.Now,
 	}
 }
 
-func (l *SlidingWindowLogLimiter) Allow(ctx context.Context, key string) (Decision, error) {
+func (l *SlidingWindowLogLimiter) Allow(ctx context.Context, key string, policy Policy) (Decision, error) {
 	if err := ctx.Err(); err != nil {
 		return Decision{}, err
 	}
 
 	Now := l.Now()
-	windowStart := Now.Add(-l.window)
+	windowStart := Now.Add(-policy.Window)
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -52,9 +40,9 @@ func (l *SlidingWindowLogLimiter) Allow(ctx context.Context, key string) (Decisi
 
 	timestamps = timestamps[firstValidIndex:]
 
-	if int64(len(timestamps)) >= l.limit {
+	if int64(len(timestamps)) >= policy.Limit {
 		oldestRequest := timestamps[0]
-		retryAfter := max(oldestRequest.Add(l.window).Sub(Now), 0)
+		retryAfter := max(oldestRequest.Add(policy.Window).Sub(Now), 0)
 
 		l.Requests[key] = timestamps
 
@@ -62,7 +50,7 @@ func (l *SlidingWindowLogLimiter) Allow(ctx context.Context, key string) (Decisi
 			Allowed:    false,
 			RetryAfter: retryAfter,
 			Remaining:  0,
-			Limit:      l.limit,
+			Limit:      policy.Limit,
 		}, nil
 	}
 
@@ -72,7 +60,7 @@ func (l *SlidingWindowLogLimiter) Allow(ctx context.Context, key string) (Decisi
 	return Decision{
 		Allowed:    true,
 		RetryAfter: 0,
-		Remaining:  l.limit - int64(len(timestamps)),
-		Limit:      l.limit,
+		Remaining:  policy.Limit - int64(len(timestamps)),
+		Limit:      policy.Limit,
 	}, nil
 }

@@ -7,6 +7,7 @@ import (
 
 	"quwin/api-gateway/internal/auth"
 	"quwin/api-gateway/internal/limiter"
+	"quwin/api-gateway/internal/policy"
 )
 
 type Authenticator interface {
@@ -15,6 +16,7 @@ type Authenticator interface {
 
 func RateLimitMiddleware(
 	authenticator Authenticator,
+	policyStore *policy.Store,
 	rateLimiter limiter.RateLimiter,
 	next http.Handler,
 ) http.Handler {
@@ -32,10 +34,9 @@ func RateLimitMiddleware(
 			return
 		}
 
-		// Rate limit by stable identity, not by the secret itself.
-		rateLimitKey := principal.ID
+		selectedPolicy := policyStore.ForPlan(principal.Plan)
 
-		decision, err := rateLimiter.Allow(r.Context(), rateLimitKey)
+		decision, err := rateLimiter.Allow(r.Context(), principal.ID, selectedPolicy)
 		if err != nil {
 			http.Error(w, "rate limiter unavailable", http.StatusServiceUnavailable)
 			return
@@ -43,6 +44,7 @@ func RateLimitMiddleware(
 
 		w.Header().Set("X-RateLimit-Limit", strconv.FormatInt(decision.Limit, 10))
 		w.Header().Set("X-RateLimit-Remaining", strconv.FormatInt(decision.Remaining, 10))
+		w.Header().Set("X-RateLimit-Policy", principal.Plan)
 
 		if !decision.Allowed {
 			w.Header().Set("Retry-After", strconv.Itoa(int(decision.RetryAfter.Seconds())))
@@ -50,7 +52,6 @@ func RateLimitMiddleware(
 			return
 		}
 
-		// Forward safe identity info, not the raw API key.
 		r.Header.Set("X-Authenticated-Principal-ID", principal.ID)
 		r.Header.Set("X-Authenticated-Plan", principal.Plan)
 		r.Header.Del("X-API-Key")

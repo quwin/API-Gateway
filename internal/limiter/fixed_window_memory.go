@@ -13,28 +13,18 @@ type fixedWindowCounter struct {
 
 type FixedWindowMemoryLimiter struct {
 	mu       sync.Mutex
-	limit    int64
-	window   time.Duration
 	counters map[string]fixedWindowCounter
 	Now      func() time.Time
 }
 
-func NewFixedWindowMemoryLimiter(limit int64, window time.Duration) *FixedWindowMemoryLimiter {
-	if limit <= 0 {
-		panic("limit must be greater than 0")
-	}
-	if window <= 0 {
-		panic("window must be greater than 0")
-	}
+func NewFixedWindowMemoryLimiter() *FixedWindowMemoryLimiter {
 	return &FixedWindowMemoryLimiter{
-		limit:    limit,
-		window:   window,
 		counters: make(map[string]fixedWindowCounter),
 		Now:      time.Now,
 	}
 }
 
-func (limiter *FixedWindowMemoryLimiter) Allow(ctx context.Context, key string) (Decision, error) {
+func (limiter *FixedWindowMemoryLimiter) Allow(ctx context.Context, key string, policy Policy) (Decision, error) {
 	if err := ctx.Err(); err != nil {
 		return Decision{}, err
 	}
@@ -48,18 +38,18 @@ func (limiter *FixedWindowMemoryLimiter) Allow(ctx context.Context, key string) 
 	if !exists || Now.After(counter.resetAt) {
 		counter = fixedWindowCounter{
 			count:   0,
-			resetAt: Now.Add(limiter.window),
+			resetAt: Now.Add(policy.Window),
 		}
 	}
 
-	if counter.count >= limiter.limit {
+	if counter.count >= policy.Limit {
 		limiter.counters[key] = counter
 
 		return Decision{
 			Allowed:    false,
-			RetryAfter: time.Until(counter.resetAt),
+			RetryAfter: counter.resetAt.Sub(Now),
 			Remaining:  0,
-			Limit:      limiter.limit,
+			Limit:      policy.Limit,
 		}, nil
 	}
 
@@ -69,7 +59,7 @@ func (limiter *FixedWindowMemoryLimiter) Allow(ctx context.Context, key string) 
 	return Decision{
 		Allowed:    true,
 		RetryAfter: 0,
-		Remaining:  limiter.limit - counter.count,
-		Limit:      limiter.limit,
+		Remaining:  policy.Limit - counter.count,
+		Limit:      policy.Limit,
 	}, nil
 }

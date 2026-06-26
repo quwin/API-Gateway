@@ -13,10 +13,8 @@ import (
 var errInvalidTokenBucketRedisResult = errors.New("invalid token bucket redis script result")
 
 type TokenBucketRedisLimiter struct {
-	client     *redis.Client
-	capacity   float64
-	refillRate float64
-	Now        func() time.Time
+	client *redis.Client
+	Now    func() time.Time
 }
 
 // NewTokenBucketRedisLimiter creates a Redis-backed token bucket limiter.
@@ -29,28 +27,13 @@ type TokenBucketRedisLimiter struct {
 //   refillRate = 2
 //
 // This allows bursts up to 10 requests and refills at 2 requests/sec.
-func NewTokenBucketRedisLimiter(
-	client *redis.Client,
-	capacity int64,
-	refillRate float64,
-) *TokenBucketRedisLimiter {
+func NewTokenBucketRedisLimiter(client *redis.Client) *TokenBucketRedisLimiter {
 	if client == nil {
 		panic("redis client must not be nil")
 	}
-
-	if capacity <= 0 {
-		panic("capacity must be greater than 0")
-	}
-
-	if refillRate <= 0 {
-		panic("refillRate must be greater than 0")
-	}
-
 	return &TokenBucketRedisLimiter{
-		client:     client,
-		capacity:   float64(capacity),
-		refillRate: refillRate,
-		Now:        time.Now,
+		client: client,
+		Now:    time.Now,
 	}
 }
 
@@ -104,7 +87,7 @@ var tokenBucketRedisScript = redis.NewScript(`
 	}
 `)
 
-func (l *TokenBucketRedisLimiter) Allow(ctx context.Context, key string) (Decision, error) {
+func (l *TokenBucketRedisLimiter) Allow(ctx context.Context, key string, policy Policy) (Decision, error) {
 	if err := ctx.Err(); err != nil {
 		return Decision{}, err
 	}
@@ -117,14 +100,14 @@ func (l *TokenBucketRedisLimiter) Allow(ctx context.Context, key string) (Decisi
 
 	// Keep idle users in Redis for roughly enough time to refill from empty to full,
 	// plus a small buffer. This prevents unbounded key growth.
-	ttlSeconds := max(int64(math.Ceil(l.capacity/l.refillRate)) + 60, 60)
+	ttlSeconds := max(int64(math.Ceil(float64(policy.Capacity)/policy.RefillRate)) + 60, 60)
 
 	result, err := tokenBucketRedisScript.Run(
 		ctx,
 		l.client,
 		[]string{redisTokensKey, redisTimestampKey},
-		strconv.FormatFloat(l.capacity, 'f', -1, 64),
-		strconv.FormatFloat(l.refillRate, 'f', -1, 64),
+		strconv.FormatFloat(float64(policy.Capacity), 'f', -1, 64),
+		strconv.FormatFloat(policy.RefillRate, 'f', -1, 64),
 		strconv.FormatFloat(NowSeconds, 'f', -1, 64),
 		"1",
 		strconv.FormatInt(ttlSeconds, 10),
@@ -164,7 +147,7 @@ func (l *TokenBucketRedisLimiter) Allow(ctx context.Context, key string) (Decisi
 		Allowed:    allowedInt == 1,
 		RetryAfter: retryAfter,
 		Remaining:  remaining,
-		Limit:      int64(l.capacity),
+		Limit:      int64(float64(policy.Capacity)),
 	}, nil
 }
 

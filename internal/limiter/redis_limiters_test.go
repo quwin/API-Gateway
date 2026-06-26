@@ -13,80 +13,63 @@ import (
 
 func newTestRedisClient(t *testing.T) (*miniredis.Miniredis, *redis.Client) {
 	t.Helper()
+
 	s := miniredis.RunT(t)
+
 	client := redis.NewClient(&redis.Options{
 		Addr: s.Addr(),
 	})
+
 	t.Cleanup(func() {
 		_ = client.Close()
 		s.Close()
 	})
+
 	if err := client.Ping(context.Background()).Err(); err != nil {
 		t.Fatalf("ping miniredis: %v", err)
 	}
+
 	return s, client
 }
 
-func assertDecision(
-	t *testing.T,
-	got limiter.Decision,
-	allowed bool,
-	remaining int64,
-	limit int64,
-	retryAfter time.Duration,
-) {
-	t.Helper()
-
-	if got.Allowed != allowed {
-		t.Fatalf("Allowed: expected %v, got %v; limiter.Decision=%+v", allowed, got.Allowed, got)
-	}
-	if got.Remaining != remaining {
-		t.Fatalf("Remaining: expected %d, got %d; limiter.Decision=%+v", remaining, got.Remaining, got)
-	}
-	if got.Limit != limit {
-		t.Fatalf("Limit: expected %d, got %d; limiter.Decision=%+v", limit, got.Limit, got)
-	}
-	if got.RetryAfter != retryAfter {
-		t.Fatalf("RetryAfter: expected %s, got %s; limiter.Decision=%+v", retryAfter, got.RetryAfter, got)
-	}
-}
-
-func TestFixedWindowRedisAllowsUntilLimitThenRejects(t *testing.T) {
+func TestFixedWindowRedisAllowsUntilPolicyLimitThenRejects(t *testing.T) {
 	_, client := newTestRedisClient(t)
 
-	l := limiter.NewFixedWindowRedisLimiter(client, 2, time.Minute)
+	l := limiter.NewFixedWindowRedisLimiter(client)
+	policy := fixedPolicy(2, time.Minute)
 
-	first, err := l.Allow(context.Background(), "user-1")
+	first, err := l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertDecision(t, first, true, 1, 2, 0)
 
-	second, err := l.Allow(context.Background(), "user-1")
+	second, err := l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertDecision(t, second, true, 0, 2, 0)
 
-	third, err := l.Allow(context.Background(), "user-1")
+	third, err := l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertDecision(t, third, false, 0, 2, time.Minute)
 }
 
-func TestFixedWindowRedisAllowsAfterWindowExpires(t *testing.T) {
+func TestFixedWindowRedisAllowsAfterPolicyWindowExpires(t *testing.T) {
 	s, client := newTestRedisClient(t)
 
-	l := limiter.NewFixedWindowRedisLimiter(client, 1, time.Minute)
+	l := limiter.NewFixedWindowRedisLimiter(client)
+	policy := fixedPolicy(1, time.Minute)
 
-	first, err := l.Allow(context.Background(), "user-1")
+	first, err := l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertDecision(t, first, true, 0, 1, 0)
 
-	rejected, err := l.Allow(context.Background(), "user-1")
+	rejected, err := l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +79,7 @@ func TestFixedWindowRedisAllowsAfterWindowExpires(t *testing.T) {
 
 	s.FastForward(time.Minute)
 
-	allowed, err := l.Allow(context.Background(), "user-1")
+	allowed, err := l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,15 +89,16 @@ func TestFixedWindowRedisAllowsAfterWindowExpires(t *testing.T) {
 func TestFixedWindowRedisTracksKeysIndependently(t *testing.T) {
 	_, client := newTestRedisClient(t)
 
-	l := limiter.NewFixedWindowRedisLimiter(client, 1, time.Minute)
+	l := limiter.NewFixedWindowRedisLimiter(client)
+	policy := fixedPolicy(1, time.Minute)
 
-	userOneFirst, err := l.Allow(context.Background(), "user-1")
+	userOneFirst, err := l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertDecision(t, userOneFirst, true, 0, 1, 0)
 
-	userOneSecond, err := l.Allow(context.Background(), "user-1")
+	userOneSecond, err := l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +106,7 @@ func TestFixedWindowRedisTracksKeysIndependently(t *testing.T) {
 		t.Fatalf("expected user-1 second request to be rejected, got %+v", userOneSecond)
 	}
 
-	userTwoFirst, err := l.Allow(context.Background(), "user-2")
+	userTwoFirst, err := l.Allow(context.Background(), "user-2", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,44 +116,19 @@ func TestFixedWindowRedisTracksKeysIndependently(t *testing.T) {
 func TestFixedWindowRedisReturnsContextError(t *testing.T) {
 	_, client := newTestRedisClient(t)
 
-	l := limiter.NewFixedWindowRedisLimiter(client, 2, time.Minute)
+	l := limiter.NewFixedWindowRedisLimiter(client)
+	policy := fixedPolicy(2, time.Minute)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	decision, err := l.Allow(ctx, "user-1")
+	decision, err := l.Allow(ctx, "user-1", policy)
 	if err != context.Canceled {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
+
 	if decision != (limiter.Decision{}) {
-		t.Fatalf("expected zero-value limiter.Decision, got %+v", decision)
-	}
-}
-
-func TestFixedWindowRedisPanicsWhenConstructedWrong(t *testing.T) {
-	_, client := newTestRedisClient(t)
-
-	tests := []struct {
-		name   string
-		limit  int64
-		window time.Duration
-	}{
-		{name: "zero limit", limit: 0, window: time.Minute},
-		{name: "negative limit", limit: -1, window: time.Minute},
-		{name: "zero window", limit: 1, window: 0},
-		{name: "negative window", limit: 1, window: -time.Minute},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			defer func() {
-				if r := recover(); r == nil {
-					t.Fatal("expected panic, got none")
-				}
-			}()
-
-			limiter.NewFixedWindowRedisLimiter(client, tt.limit, tt.window)
-		})
+		t.Fatalf("expected zero-value decision, got %+v", decision)
 	}
 }
 
@@ -178,24 +137,26 @@ func TestTokenBucketRedisAllowsBurstThenRejects(t *testing.T) {
 
 	currentTime := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
-	l := limiter.NewTokenBucketRedisLimiter(client, 2, 1)
+	l := limiter.NewTokenBucketRedisLimiter(client)
 	l.Now = func() time.Time {
 		return currentTime
 	}
 
-	first, err := l.Allow(context.Background(), "user-1")
+	policy := tokenBucketPolicy(2, 1)
+
+	first, err := l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertDecision(t, first, true, 1, 2, 0)
 
-	second, err := l.Allow(context.Background(), "user-1")
+	second, err := l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertDecision(t, second, true, 0, 2, 0)
 
-	third, err := l.Allow(context.Background(), "user-1")
+	third, err := l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,53 +168,56 @@ func TestTokenBucketRedisRefillsOverTime(t *testing.T) {
 
 	currentTime := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
-	l := limiter.NewTokenBucketRedisLimiter(client, 2, 1)
+	l := limiter.NewTokenBucketRedisLimiter(client)
 	l.Now = func() time.Time {
 		return currentTime
 	}
 
-	_, err := l.Allow(context.Background(), "user-1")
+	policy := tokenBucketPolicy(2, 1)
+
+	_, err := l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	_, err = l.Allow(context.Background(), "user-1")
+	_, err = l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	currentTime = currentTime.Add(time.Second)
 
-	allowed, err := l.Allow(context.Background(), "user-1")
+	allowed, err := l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertDecision(t, allowed, true, 0, 2, 0)
 }
 
-func TestTokenBucketRedisClampsRefillToCapacity(t *testing.T) {
+func TestTokenBucketRedisClampsRefillToPolicyCapacity(t *testing.T) {
 	_, client := newTestRedisClient(t)
 
 	currentTime := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
-	l := limiter.NewTokenBucketRedisLimiter(client, 2, 1)
+	l := limiter.NewTokenBucketRedisLimiter(client)
 	l.Now = func() time.Time {
 		return currentTime
 	}
 
-	_, err := l.Allow(context.Background(), "user-1")
+	policy := tokenBucketPolicy(2, 1)
+
+	_, err := l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	currentTime = currentTime.Add(10 * time.Second)
 
-	decision, err := l.Allow(context.Background(), "user-1")
+	decision, err := l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Bucket should refill only back to capacity 2, then spend 1 token.
 	assertDecision(t, decision, true, 1, 2, 0)
 }
 
@@ -262,18 +226,20 @@ func TestTokenBucketRedisTracksKeysIndependently(t *testing.T) {
 
 	currentTime := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
-	l := limiter.NewTokenBucketRedisLimiter(client, 1, 1)
+	l := limiter.NewTokenBucketRedisLimiter(client)
 	l.Now = func() time.Time {
 		return currentTime
 	}
 
-	userOneFirst, err := l.Allow(context.Background(), "user-1")
+	policy := tokenBucketPolicy(1, 1)
+
+	userOneFirst, err := l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertDecision(t, userOneFirst, true, 0, 1, 0)
 
-	userOneSecond, err := l.Allow(context.Background(), "user-1")
+	userOneSecond, err := l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +247,7 @@ func TestTokenBucketRedisTracksKeysIndependently(t *testing.T) {
 		t.Fatalf("expected user-1 second request to be rejected, got %+v", userOneSecond)
 	}
 
-	userTwoFirst, err := l.Allow(context.Background(), "user-2")
+	userTwoFirst, err := l.Allow(context.Background(), "user-2", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,103 +257,88 @@ func TestTokenBucketRedisTracksKeysIndependently(t *testing.T) {
 func TestTokenBucketRedisReturnsContextError(t *testing.T) {
 	_, client := newTestRedisClient(t)
 
-	l := limiter.NewTokenBucketRedisLimiter(client, 2, 1)
+	l := limiter.NewTokenBucketRedisLimiter(client)
+	policy := tokenBucketPolicy(2, 1)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	decision, err := l.Allow(ctx, "user-1")
+	decision, err := l.Allow(ctx, "user-1", policy)
 	if err != context.Canceled {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
+
 	if decision != (limiter.Decision{}) {
-		t.Fatalf("expected zero-value limiter.Decision, got %+v", decision)
+		t.Fatalf("expected zero-value decision, got %+v", decision)
 	}
 }
 
-func TestTokenBucketRedisPanicsWhenConstructedWrong(t *testing.T) {
-	_, client := newTestRedisClient(t)
+func TestTokenBucketRedisPanicsWithNilClient(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic, got none")
+		}
+	}()
 
-	tests := []struct {
-		name       string
-		client     *redis.Client
-		capacity   int64
-		refillRate float64
-	}{
-		{name: "nil client", client: nil, capacity: 1, refillRate: 1},
-		{name: "zero capacity", client: client, capacity: 0, refillRate: 1},
-		{name: "negative capacity", client: client, capacity: -1, refillRate: 1},
-		{name: "zero refill rate", client: client, capacity: 1, refillRate: 0},
-		{name: "negative refill rate", client: client, capacity: 1, refillRate: -1},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			defer func() {
-				if r := recover(); r == nil {
-					t.Fatal("expected panic, got none")
-				}
-			}()
-
-			limiter.NewTokenBucketRedisLimiter(tt.client, tt.capacity, tt.refillRate)
-		})
-	}
+	limiter.NewTokenBucketRedisLimiter(nil)
 }
 
-func TestSlidingWindowRedisAllowsRequestsUnderLimit(t *testing.T) {
+func TestSlidingWindowRedisAllowsRequestsUnderPolicyLimit(t *testing.T) {
 	_, client := newTestRedisClient(t)
 
 	currentTime := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
-	l := limiter.NewSlidingWindowRedisLimiter(client, 2, time.Minute, "test-instance")
+	l := limiter.NewSlidingWindowRedisLimiter(client, "test-instance")
 	l.Now = func() time.Time {
 		return currentTime
 	}
 
-	first, err := l.Allow(context.Background(), "user-1")
+	policy := fixedPolicy(2, time.Minute)
+
+	first, err := l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertDecision(t, first, true, 1, 2, 0)
 
-	second, err := l.Allow(context.Background(), "user-1")
+	second, err := l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertDecision(t, second, true, 0, 2, 0)
 }
 
-func TestSlidingWindowRedisRejectsWhenLimitReached(t *testing.T) {
+func TestSlidingWindowRedisRejectsWhenPolicyLimitReached(t *testing.T) {
 	_, client := newTestRedisClient(t)
 
 	currentTime := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
-	l := limiter.NewSlidingWindowRedisLimiter(client, 2, time.Minute, "test-instance")
+	l := limiter.NewSlidingWindowRedisLimiter(client, "test-instance")
 	l.Now = func() time.Time {
 		return currentTime
 	}
 
-	_, err := l.Allow(context.Background(), "user-1")
+	policy := fixedPolicy(2, time.Minute)
+
+	_, err := l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	currentTime = currentTime.Add(10 * time.Second)
 
-	_, err = l.Allow(context.Background(), "user-1")
+	_, err = l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	currentTime = currentTime.Add(10 * time.Second)
 
-	decision, err := l.Allow(context.Background(), "user-1")
+	decision, err := l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Oldest request was at 12:00:00. Current request is at 12:00:20.
-	// Oldest request exits the 60-second sliding window at 12:01:00.
 	assertDecision(t, decision, false, 0, 2, 40*time.Second)
 }
 
@@ -396,26 +347,28 @@ func TestSlidingWindowRedisAllowsAfterOldestRequestExpires(t *testing.T) {
 
 	currentTime := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
-	l := limiter.NewSlidingWindowRedisLimiter(client, 2, time.Minute, "test-instance")
+	l := limiter.NewSlidingWindowRedisLimiter(client, "test-instance")
 	l.Now = func() time.Time {
 		return currentTime
 	}
 
-	_, err := l.Allow(context.Background(), "user-1")
+	policy := fixedPolicy(2, time.Minute)
+
+	_, err := l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	currentTime = currentTime.Add(10 * time.Second)
 
-	_, err = l.Allow(context.Background(), "user-1")
+	_, err = l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	currentTime = currentTime.Add(10 * time.Second)
 
-	rejected, err := l.Allow(context.Background(), "user-1")
+	rejected, err := l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -425,7 +378,7 @@ func TestSlidingWindowRedisAllowsAfterOldestRequestExpires(t *testing.T) {
 
 	currentTime = time.Date(2026, 1, 1, 12, 1, 0, 1, time.UTC)
 
-	allowed, err := l.Allow(context.Background(), "user-1")
+	allowed, err := l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -433,57 +386,25 @@ func TestSlidingWindowRedisAllowsAfterOldestRequestExpires(t *testing.T) {
 	assertDecision(t, allowed, true, 0, 2, 0)
 }
 
-func TestSlidingWindowRedisDoesNotResetAtFixedBoundary(t *testing.T) {
-	_, client := newTestRedisClient(t)
-
-	currentTime := time.Date(2026, 1, 1, 12, 0, 30, 0, time.UTC)
-
-	l := limiter.NewSlidingWindowRedisLimiter(client, 2, time.Minute, "test-instance")
-	l.Now = func() time.Time {
-		return currentTime
-	}
-
-	_, err := l.Allow(context.Background(), "user-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	currentTime = time.Date(2026, 1, 1, 12, 0, 50, 0, time.UTC)
-
-	_, err = l.Allow(context.Background(), "user-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	currentTime = time.Date(2026, 1, 1, 12, 1, 5, 0, time.UTC)
-
-	d, err := l.Allow(context.Background(), "user-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Both prior requests are still inside the last 60 seconds.
-	// Oldest request expires at 12:01:30, so retry-after is 25s.
-	assertDecision(t, d, false, 0, 2, 25*time.Second)
-}
-
 func TestSlidingWindowRedisTracksKeysIndependently(t *testing.T) {
 	_, client := newTestRedisClient(t)
 
 	currentTime := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
-	l := limiter.NewSlidingWindowRedisLimiter(client, 1, time.Minute, "test-instance")
+	l := limiter.NewSlidingWindowRedisLimiter(client, "test-instance")
 	l.Now = func() time.Time {
 		return currentTime
 	}
 
-	userOneFirst, err := l.Allow(context.Background(), "user-1")
+	policy := fixedPolicy(1, time.Minute)
+
+	userOneFirst, err := l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertDecision(t, userOneFirst, true, 0, 1, 0)
 
-	userOneSecond, err := l.Allow(context.Background(), "user-1")
+	userOneSecond, err := l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -491,7 +412,7 @@ func TestSlidingWindowRedisTracksKeysIndependently(t *testing.T) {
 		t.Fatalf("expected user-1 second request to be rejected, got %+v", userOneSecond)
 	}
 
-	userTwoFirst, err := l.Allow(context.Background(), "user-2")
+	userTwoFirst, err := l.Allow(context.Background(), "user-2", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -503,13 +424,15 @@ func TestSlidingWindowRedisStoresDistinctRequestsAtSameTimestamp(t *testing.T) {
 
 	currentTime := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
-	l := limiter.NewSlidingWindowRedisLimiter(client, 3, time.Minute, "test-instance")
+	l := limiter.NewSlidingWindowRedisLimiter(client, "test-instance")
 	l.Now = func() time.Time {
 		return currentTime
 	}
 
+	policy := fixedPolicy(3, time.Minute)
+
 	for i := 0; i < 3; i++ {
-		d, err := l.Allow(context.Background(), "user-1")
+		d, err := l.Allow(context.Background(), "user-1", policy)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -518,7 +441,7 @@ func TestSlidingWindowRedisStoresDistinctRequestsAtSameTimestamp(t *testing.T) {
 		}
 	}
 
-	rejected, err := l.Allow(context.Background(), "user-1")
+	rejected, err := l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -530,45 +453,28 @@ func TestSlidingWindowRedisStoresDistinctRequestsAtSameTimestamp(t *testing.T) {
 func TestSlidingWindowRedisReturnsContextError(t *testing.T) {
 	_, client := newTestRedisClient(t)
 
-	l := limiter.NewSlidingWindowRedisLimiter(client, 2, time.Minute, "test-instance")
+	l := limiter.NewSlidingWindowRedisLimiter(client, "test-instance")
+	policy := fixedPolicy(2, time.Minute)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	d, err := l.Allow(ctx, "user-1")
+	d, err := l.Allow(ctx, "user-1", policy)
 	if err != context.Canceled {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
+
 	if d != (limiter.Decision{}) {
-		t.Fatalf("expected zero-value d, got %+v", d)
+		t.Fatalf("expected zero-value decision, got %+v", d)
 	}
 }
 
-func TestSlidingWindowRedisPanicsWhenConstructedWrong(t *testing.T) {
-	_, client := newTestRedisClient(t)
+func TestSlidingWindowRedisPanicsWithNilClient(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic, got none")
+		}
+	}()
 
-	tests := []struct {
-		name   string
-		client *redis.Client
-		limit  int64
-		window time.Duration
-	}{
-		{name: "nil client", client: nil, limit: 1, window: time.Minute},
-		{name: "zero limit", client: client, limit: 0, window: time.Minute},
-		{name: "negative limit", client: client, limit: -1, window: time.Minute},
-		{name: "zero window", client: client, limit: 1, window: 0},
-		{name: "negative window", client: client, limit: 1, window: -time.Minute},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			defer func() {
-				if r := recover(); r == nil {
-					t.Fatal("expected panic, got none")
-				}
-			}()
-
-			limiter.NewSlidingWindowRedisLimiter(tt.client, tt.limit, tt.window, "test-instance")
-		})
-	}
+	limiter.NewSlidingWindowRedisLimiter(nil, "test-instance")
 }

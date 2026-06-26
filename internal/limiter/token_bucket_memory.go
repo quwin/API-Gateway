@@ -14,8 +14,6 @@ type tokenBucket struct {
 
 type TokenBucketMemoryLimiter struct {
 	mu         sync.Mutex
-	capacity   float64
-	refillRate float64
 	buckets    map[string]tokenBucket
 	Now        func() time.Time
 }
@@ -30,24 +28,14 @@ type TokenBucketMemoryLimiter struct {
 //   refillRate = 2
 //
 // This allows bursts of up to 10 requests and refills at 2 requests/sec.
-func NewTokenBucketMemoryLimiter(capacity int64, refillRate float64) *TokenBucketMemoryLimiter {
-	if capacity <= 0 {
-		panic("capacity must be greater than 0")
-	}
-
-	if refillRate <= 0 {
-		panic("refillRate must be greater than 0")
-	}
-
+func NewTokenBucketMemoryLimiter() *TokenBucketMemoryLimiter {
 	return &TokenBucketMemoryLimiter{
-		capacity:   float64(capacity),
-		refillRate: refillRate,
 		buckets:    make(map[string]tokenBucket),
 		Now:        time.Now,
 	}
 }
 
-func (l *TokenBucketMemoryLimiter) Allow(ctx context.Context, key string) (Decision, error) {
+func (l *TokenBucketMemoryLimiter) Allow(ctx context.Context, key string, policy Policy) (Decision, error) {
 	if err := ctx.Err(); err != nil {
 		return Decision{}, err
 	}
@@ -60,20 +48,20 @@ func (l *TokenBucketMemoryLimiter) Allow(ctx context.Context, key string) (Decis
 	bucket, exists := l.buckets[key]
 	if !exists {
 		bucket = tokenBucket{
-			tokens:       l.capacity,
+			tokens:       float64(policy.Capacity),
 			lastRefillAt: Now,
 		}
 	}
 
 	elapsed := Now.Sub(bucket.lastRefillAt).Seconds()
-	tokensToAdd := elapsed * l.refillRate
+	tokensToAdd := elapsed * policy.RefillRate
 
-	bucket.tokens = math.Min(l.capacity, bucket.tokens+tokensToAdd)
+	bucket.tokens = math.Min(float64(policy.Capacity), bucket.tokens+tokensToAdd)
 	bucket.lastRefillAt = Now
 
 	if bucket.tokens < 1 {
 		tokensNeeded := 1 - bucket.tokens
-		secondsUntilNextToken := tokensNeeded / l.refillRate
+		secondsUntilNextToken := tokensNeeded / policy.RefillRate
 		retryAfter := time.Duration(math.Ceil(secondsUntilNextToken)) * time.Second
 
 		l.buckets[key] = bucket
@@ -82,7 +70,7 @@ func (l *TokenBucketMemoryLimiter) Allow(ctx context.Context, key string) (Decis
 			Allowed:    false,
 			RetryAfter: retryAfter,
 			Remaining:  int64(math.Floor(bucket.tokens)),
-			Limit:      int64(l.capacity),
+			Limit:      int64(policy.Capacity),
 		}, nil
 	}
 
@@ -93,6 +81,6 @@ func (l *TokenBucketMemoryLimiter) Allow(ctx context.Context, key string) (Decis
 		Allowed:    true,
 		RetryAfter: 0,
 		Remaining:  int64(math.Floor(bucket.tokens)),
-		Limit:      int64(l.capacity),
+		Limit:      int64(policy.Capacity),
 	}, nil
 }

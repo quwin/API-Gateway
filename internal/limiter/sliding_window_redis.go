@@ -14,8 +14,6 @@ var errInvalidSlidingWindowRedisResult = errors.New("invalid sliding window redi
 
 type SlidingWindowRedisLimiter struct {
 	client     *redis.Client
-	limit      int64
-	window     time.Duration
 	Now        func() time.Time
 	instanceID string
 	sequence   atomic.Uint64
@@ -23,26 +21,16 @@ type SlidingWindowRedisLimiter struct {
 
 func NewSlidingWindowRedisLimiter(
 	client *redis.Client,
-	limit int64,
-	window time.Duration,
 	instanceID string,
 ) *SlidingWindowRedisLimiter {
 	if client == nil {
 		panic("redis client must not be nil")
-	}
-	if limit <= 0 {
-		panic("limit must be greater than 0")
-	}
-	if window <= 0 {
-		panic("window must be greater than 0")
 	}
 	if instanceID == "" {
 		instanceID = "gateway"
 	}
 	return &SlidingWindowRedisLimiter{
 		client:     client,
-		limit:      limit,
-		window:     window,
 		Now:        time.Now,
 		instanceID: instanceID,
 	}
@@ -98,7 +86,7 @@ var slidingWindowRedisScript = redis.NewScript(`
 	}
 `)
 
-func (l *SlidingWindowRedisLimiter) Allow(ctx context.Context, key string) (Decision, error) {
+func (l *SlidingWindowRedisLimiter) Allow(ctx context.Context, key string, policy Policy) (Decision, error) {
 	if err := ctx.Err(); err != nil {
 		return Decision{}, err
 	}
@@ -107,7 +95,7 @@ func (l *SlidingWindowRedisLimiter) Allow(ctx context.Context, key string) (Deci
 	redisKey := "ratelimit:sliding_window:" + key
 	// Adds an additional iterator in case two 
 	member := strconv.FormatInt(Now.UnixNano(), 10) + ":" + strconv.FormatUint(l.sequence.Add(1), 10)
-	windowSeconds := l.window.Seconds()
+	windowSeconds := policy.Window.Seconds()
 
 	ttlSeconds := max(60, int64(math.Ceil(windowSeconds))+60)
 
@@ -115,7 +103,7 @@ func (l *SlidingWindowRedisLimiter) Allow(ctx context.Context, key string) (Deci
 		ctx,
 		l.client,
 		[]string{redisKey},
-		strconv.FormatInt(l.limit, 10),
+		strconv.FormatInt(policy.Limit, 10),
 		strconv.FormatFloat(windowSeconds, 'f', -1, 64),
 		strconv.FormatFloat(NowSeconds, 'f', -1, 64),
 		member,
@@ -156,6 +144,6 @@ func (l *SlidingWindowRedisLimiter) Allow(ctx context.Context, key string) (Deci
 		Allowed:    allowedInt == 1,
 		RetryAfter: retryAfter,
 		Remaining:  remaining,
-		Limit:      l.limit,
+		Limit:      policy.Limit,
 	}, nil
 }

@@ -11,6 +11,7 @@ import (
 	"quwin/api-gateway/internal/gateway"
 	"quwin/api-gateway/internal/limiter"
 	"quwin/api-gateway/internal/middleware"
+	"quwin/api-gateway/internal/policy"
 	"strconv"
 	"time"
 
@@ -38,7 +39,24 @@ func main() {
 	redisClient := newRedisClientIfNeeded()
 	rateLimiter := getRateLimiter(redisClient)
 
-	apiHandler := middleware.RateLimitMiddleware(apiKeyAuthenticator, rateLimiter, reverseProxy)
+	defaultPolicy := limiter.Policy{
+		Limit:      getenvInt64("RATE_LIMIT", 5),
+		Window:     getenvDuration("RATE_LIMIT_WINDOW", time.Minute),
+		Capacity:   getenvInt64("BUCKET_CAPACITY", 5),
+		RefillRate: getenvFloat64("RATE_LIMIT", 5) / getenvDuration("RATE_LIMIT_WINDOW", time.Minute).Seconds(),
+	}
+	planPolicies, err := policy.ParsePlanPolicies(getenvString("RATE_LIMIT_POLICIES", ""))
+	if err != nil {
+		log.Fatalf("invalid RATE_LIMIT_POLICIES: %v", err)
+	}
+	policyStore := policy.NewStore(defaultPolicy, planPolicies)
+
+	apiHandler := middleware.RateLimitMiddleware(
+		apiKeyAuthenticator,
+		policyStore,
+		rateLimiter,
+		reverseProxy,
+	)
 	apiHandler = middleware.MetricsMiddleware(apiHandler)
 
 	mux := http.NewServeMux()
@@ -64,37 +82,18 @@ func getRateLimiter(redisClient *redis.Client) limiter.RateLimiter {
 	limiterType := getenvString("RATE_LIMITER", "fixed-window-memory")
 	switch limiterType {
 	case "fixed-window-memory":
-		return limiter.NewFixedWindowMemoryLimiter(
-			getenvInt64("RATE_LIMIT", 5),
-			getenvDuration("RATE_LIMIT_WINDOW", time.Minute),
-		)
+		return limiter.NewFixedWindowMemoryLimiter()
 	case "token-bucket-memory":
-		return limiter.NewTokenBucketMemoryLimiter(
-			getenvInt64("BUCKET_CAPACITY", 5),
-			getenvFloat64("RATE_LIMIT", 5)/60.0,
-		)
+		return limiter.NewTokenBucketMemoryLimiter()
 	case "sliding-window-memory":
-		return limiter.NewSlidingWindowLogLimiter(
-			getenvInt64("RATE_LIMIT", 5),
-			getenvDuration("RATE_LIMIT_WINDOW", time.Minute),
-		)
+		return limiter.NewSlidingWindowLogLimiter()
 	case "fixed-window-redis":
-		return limiter.NewFixedWindowRedisLimiter(
-			redisClient,
-			getenvInt64("RATE_LIMIT", 5),
-			getenvDuration("RATE_LIMIT_WINDOW", time.Minute),
-		)
+		return limiter.NewFixedWindowRedisLimiter(redisClient)
 	case "token-bucket-redis":
-		return limiter.NewTokenBucketRedisLimiter(
-			redisClient,
-			getenvInt64("BUCKET_CAPACITY", 5),
-			getenvFloat64("RATE_LIMIT", 5)/60.0,
-		)
+		return limiter.NewTokenBucketRedisLimiter(redisClient)
 	case "sliding-window-redis":
 		return limiter.NewSlidingWindowRedisLimiter(
 			redisClient,
-			getenvInt64("RATE_LIMIT", 5),
-			getenvDuration("RATE_LIMIT_WINDOW", time.Minute),
 			getenvString("GATEWAY_INSTANCE_ID", uuid.NewString()),
 		)
 	default:

@@ -2,106 +2,168 @@ package limiter_test
 
 import (
 	"context"
-	"quwin/api-gateway/internal/limiter"
 	"testing"
 	"time"
+
+	"quwin/api-gateway/internal/limiter"
 )
 
-func TestTokenBucketAllowsBurstThenRejects(t *testing.T) {
+func TestTokenBucketMemoryAllowsBurstThenRejects(t *testing.T) {
 	currentTime := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
-	l := limiter.NewTokenBucketMemoryLimiter(2, 1)
+	l := limiter.NewTokenBucketMemoryLimiter()
 	l.Now = func() time.Time {
 		return currentTime
 	}
 
-	first, err := l.Allow(context.Background(), "user-1")
+	policy := tokenBucketPolicy(2, 1)
+
+	first, err := l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !first.Allowed {
-		t.Fatal("expected first request to be allowed")
+	assertDecision(t, first, true, 1, 2, 0)
+
+	second, err := l.Allow(context.Background(), "user-1", policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDecision(t, second, true, 0, 2, 0)
+
+	third, err := l.Allow(context.Background(), "user-1", policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDecision(t, third, false, 0, 2, time.Second)
+}
+
+func TestTokenBucketMemoryRefillsOverTime(t *testing.T) {
+	currentTime := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	l := limiter.NewTokenBucketMemoryLimiter()
+	l.Now = func() time.Time {
+		return currentTime
 	}
 
-	second, err := l.Allow(context.Background(), "user-1")
+	policy := tokenBucketPolicy(2, 1)
+
+	_, err := l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if !second.Allowed {
-		t.Fatal("expected second request to be allowed")
 	}
 
-	third, err := l.Allow(context.Background(), "user-1")
+	_, err = l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if third.Allowed {
-		t.Fatal("expected third request to be rejected")
 	}
 
 	currentTime = currentTime.Add(time.Second)
 
-	fourth, err := l.Allow(context.Background(), "user-1")
+	allowed, err := l.Allow(context.Background(), "user-1", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !fourth.Allowed {
-		t.Fatal("expected request to be allowed after refill")
-	}
+	assertDecision(t, allowed, true, 0, 2, 0)
 }
 
-func TestTokenBucketPanicsWhenConstructedWrong(t *testing.T) {
-	tests := []struct {
-		name       string
-		capacity   int64
-		refillRate float64
-	}{
-		{
-			name:       "zero capacity",
-			capacity:   0,
-			refillRate: 1,
-		},
-		{
-			name:       "negative capacity",
-			capacity:   -1,
-			refillRate: 1,
-		},
-		{
-			name:       "zero refill rate",
-			capacity:   1,
-			refillRate: 0,
-		},
-		{
-			name:       "negative refill rate",
-			capacity:   1,
-			refillRate: -1,
-		},
+func TestTokenBucketMemoryClampsRefillToCapacity(t *testing.T) {
+	currentTime := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	l := limiter.NewTokenBucketMemoryLimiter()
+	l.Now = func() time.Time {
+		return currentTime
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			defer func() {
-				if r := recover(); r == nil {
-					t.Fatal("expected panic, got none")
-				}
-			}()
+	policy := tokenBucketPolicy(2, 1)
 
-			limiter.NewTokenBucketMemoryLimiter(tt.capacity, tt.refillRate)
-		})
+	_, err := l.Allow(context.Background(), "user-1", policy)
+	if err != nil {
+		t.Fatal(err)
 	}
+
+	currentTime = currentTime.Add(10 * time.Second)
+
+	decision, err := l.Allow(context.Background(), "user-1", policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assertDecision(t, decision, true, 1, 2, 0)
 }
 
-func TestTokenBucketReturnsContextError(t *testing.T) {
-	l := limiter.NewTokenBucketMemoryLimiter(2, 1)
+func TestTokenBucketMemoryTracksKeysIndependently(t *testing.T) {
+	currentTime := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	l := limiter.NewTokenBucketMemoryLimiter()
+	l.Now = func() time.Time {
+		return currentTime
+	}
+
+	policy := tokenBucketPolicy(1, 1)
+
+	userOneFirst, err := l.Allow(context.Background(), "user-1", policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDecision(t, userOneFirst, true, 0, 1, 0)
+
+	userOneSecond, err := l.Allow(context.Background(), "user-1", policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if userOneSecond.Allowed {
+		t.Fatalf("expected user-1 second request to be rejected, got %+v", userOneSecond)
+	}
+
+	userTwoFirst, err := l.Allow(context.Background(), "user-2", policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDecision(t, userTwoFirst, true, 0, 1, 0)
+}
+
+func TestTokenBucketMemoryUsesPolicyCapacityAndRefillRate(t *testing.T) {
+	currentTime := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	l := limiter.NewTokenBucketMemoryLimiter()
+	l.Now = func() time.Time {
+		return currentTime
+	}
+
+	freePolicy := tokenBucketPolicy(1, 1)
+	proPolicy := tokenBucketPolicy(3, 1)
+
+	first, err := l.Allow(context.Background(), "user-1", freePolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDecision(t, first, true, 0, 1, 0)
+
+	rejectedByFreePolicy, err := l.Allow(context.Background(), "user-1", freePolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDecision(t, rejectedByFreePolicy, false, 0, 1, time.Second)
+
+	// Because the bucket was created with free capacity 1, changing to pro
+	// does not magically refill to 3. It only changes future max capacity/refill behavior.
+	currentTime = currentTime.Add(time.Second)
+
+	allowedByProPolicy, err := l.Allow(context.Background(), "user-1", proPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDecision(t, allowedByProPolicy, true, 0, 3, 0)
+}
+
+func TestTokenBucketMemoryReturnsContextError(t *testing.T) {
+	l := limiter.NewTokenBucketMemoryLimiter()
+	policy := tokenBucketPolicy(2, 1)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	decision, err := l.Allow(ctx, "user-1")
-	if err == nil {
-		t.Fatal("expected context error, got nil")
-	}
-
+	decision, err := l.Allow(ctx, "user-1", policy)
 	if err != context.Canceled {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}

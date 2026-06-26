@@ -10,22 +10,12 @@ import (
 
 type FixedWindowRedisLimiter struct {
 	client *redis.Client
-	limit  int64
-	window time.Duration
 	Now    func() time.Time
 }
 
-func NewFixedWindowRedisLimiter(client *redis.Client, limit int64, window time.Duration) *FixedWindowRedisLimiter {
-	if limit <= 0 {
-		panic("limit must be greater than 0")
-	}
-	if window <= 0 {
-		panic("window must be greater than 0")
-	}
+func NewFixedWindowRedisLimiter(client *redis.Client) *FixedWindowRedisLimiter {
 	return &FixedWindowRedisLimiter{
 		client: client,
-		limit:  limit,
-		window: window,
 		Now:    time.Now,
 	}
 }
@@ -50,7 +40,7 @@ var fixedWindowScript = redis.NewScript(`
 	return {1, limit - current, ttl}
 `)
 
-func (l *FixedWindowRedisLimiter) Allow(ctx context.Context, key string) (Decision, error) {
+func (l *FixedWindowRedisLimiter) Allow(ctx context.Context, key string, policy Policy) (Decision, error) {
 	if err := ctx.Err(); err != nil {
 		return Decision{}, err
 	}
@@ -61,8 +51,8 @@ func (l *FixedWindowRedisLimiter) Allow(ctx context.Context, key string) (Decisi
 		ctx,
 		l.client,
 		[]string{redisKey},
-		l.limit,
-		int64(l.window.Seconds()),
+		policy.Limit,
+		int64(policy.Window.Seconds()),
 	).Result()
 	if err != nil {
 		return Decision{}, err
@@ -101,6 +91,6 @@ func (l *FixedWindowRedisLimiter) Allow(ctx context.Context, key string) (Decisi
 		Allowed:    allowedInt == 1,
 		RetryAfter: retryAfter,
 		Remaining:  remaining,
-		Limit:      l.limit,
+		Limit:      policy.Limit,
 	}, nil
 }
