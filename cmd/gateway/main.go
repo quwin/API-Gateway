@@ -7,12 +7,13 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
-	"quwin/api-gateway/internal/gateway"
+	"quwin/api-gateway/internal/middleware"
 	"quwin/api-gateway/internal/limiter"
 	"strconv"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -29,11 +30,16 @@ func main() {
 
 	rateLimiter := getRateLimiter()
 
-	handler := gateway.RateLimitMiddleware(rateLimiter, reverseProxy)
+	apiHandler := middleware.RateLimitMiddleware(rateLimiter, reverseProxy)
+	apiHandler = middleware.MetricsMiddleware(apiHandler)
+
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+	mux.Handle("/", apiHandler)
 
 	server := &http.Server{
 		Addr:              listenAddr,
-		Handler:           handler,
+		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
