@@ -29,7 +29,23 @@ func main() {
 		log.Fatalf("invalid upstream URL %q: %v", upstreamURL, err)
 	}
 
-	reverseProxy := httputil.NewSingleHostReverseProxy(parsedUpstreamURL)
+	reverseProxy := &httputil.ReverseProxy{
+		Rewrite: func(r *httputil.ProxyRequest) {
+			r.SetURL(parsedUpstreamURL)
+			r.Out.Host = parsedUpstreamURL.Host
+			r.SetXForwarded()
+		},
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			log.Printf(
+				"proxy error: method=%s path=%s upstream=%s err=%v",
+				r.Method,
+				r.URL.Path,
+				parsedUpstreamURL.String(),
+				err,
+			)
+			http.Error(w, "bad gateway", http.StatusBadGateway)
+		},
+	}
 
 	apiKeyAuthenticator, err := auth.NewAPIKeyAuthenticatorFromHashes(getenvString("API_KEY_HASHES", ""))
 	if err != nil {
