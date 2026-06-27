@@ -4,6 +4,10 @@ A production-shaped API gateway written in Go that sits in front of backend serv
 
 The project is designed around a real infrastructure problem: rate limits must hold even when the gateway is horizontally scaled. A naive in-memory counter works for one process, but fails once traffic is load-balanced across multiple gateway instances. This implementation supports both local and Redis-backed limiters so the distributed behavior can be tested, compared, and demonstrated.
 
+Interested to see the project in action? It's not very visible, but it is currently deployed on the backend of my portfolio website at https://quwin.dev
+
+The project is also containerized and readily available for local testing, see `Local Demo` below
+
 ## What It Does
 
 This gateway accepts incoming HTTP requests, authenticates them using `X-API-Key`, applies the configured rate-limit policy for the authenticated principal, and proxies allowed requests to an upstream backend service.
@@ -126,7 +130,7 @@ The included Grafana dashboard visualizes:
 
 ## Local Demo
 
-The local Docker Compose setup runs:
+The `mock-backend` Docker Compose setup runs:
 
 * 3 gateway instances
 * 1 Nginx load balancer
