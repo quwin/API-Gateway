@@ -186,15 +186,3 @@ Planned or production-hardening candidates:
 * Multi-upstream routing rules
 * Kubernetes deployment manifests
 * Load-test reports and benchmark documentation
-
-
-## Related Documentation
-
-Start here:
-
-* `docs/architecture.md` — system design and request flow
-* `docs/configuration.md` — environment variables and runtime modes
-* `docs/limiter-algorithms.md` — fixed window vs. token bucket vs. sliding window
-* `docs/distributed-testing.md` — validating limits across multiple gateway instances
-* `docs/observability.md` — Prometheus metrics and Grafana dashboard
-* `docs/production-readiness.md` — what would be needed for a real production gateway
