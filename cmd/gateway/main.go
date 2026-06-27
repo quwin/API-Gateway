@@ -112,14 +112,20 @@ func newRedisClientIfNeeded() *redis.Client {
 	}
 }
 func newRedisClient() *redis.Client {
-	client := redis.NewClient(&redis.Options{
-		Addr: getenvString("REDIS_ADDR", "localhost:6379"),
-	})
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	options := &redis.Options{
+		Addr:     getenvString("REDIS_ADDR", "localhost:6379"),
+		Username: getenvString("REDIS_USERNAME", "default"),
+		Password: getenvString("REDIS_PASSWORD", ""),
+	}
+	client := redis.NewClient(options)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
 	if err := client.Ping(ctx).Err(); err != nil {
 		log.Fatalf("failed to connect to Redis: %v", err)
 	}
+
 	return client
 }
 

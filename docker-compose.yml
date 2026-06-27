@@ -6,7 +6,7 @@ services:
     environment:
       GATEWAY_ADDR: ":8080"
       UPSTREAM_URL: "${UPSTREAM_URL:-http://localhost:9000}"
-      REDIS_ADDR: "${REDIS_URL:-http://localhost:6379}"
+      REDIS_ADDR: "${REDIS_URL:-redis:6379}"
       RATE_LIMITER: "${RATE_LIMITER:-token-bucket-redis}"
       RATE_LIMIT: "${RATE_LIMIT:-5}"
       RATE_LIMIT_WINDOW: "${RATE_LIMIT_WINDOW:-1m}"
